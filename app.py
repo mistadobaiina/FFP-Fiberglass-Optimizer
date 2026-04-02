@@ -34,10 +34,10 @@ if not st.session_state.inventory.empty:
     
     # Standard Rectangle Template
     input_df = pd.DataFrame([
-        {"Length": 12.00, "Use_SC": False},
-        {"Length": 12.00, "Use_SC": False},
-        {"Length": 4.00, "Use_SC": True},
-        {"Length": 4.00, "Use_SC": True}
+        {"Length": 36, "Use_SC": False},
+        {"Length": 36, "Use_SC": False},
+        {"Length": 18, "Use_SC": True},
+        {"Length": 18, "Use_SC": True}
     ])
     
     production_table = st.data_editor(
@@ -111,7 +111,7 @@ if not st.session_state.inventory.empty:
                     if not match.empty:
                         st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {match.iloc[0]['ID']})")
                     else:
-                        st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN BATCH")
+                        st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN STOCK")
 
                 st.write("---")
                 with st.expander("🔍 View All Other SCs in Stock"):
