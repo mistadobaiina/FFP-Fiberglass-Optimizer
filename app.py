@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+import difflib
 
 # --- CONFIGURATION ---
 SCRAP_THRESHOLD = 4.00 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("FFP: Fiberglass Roll Optimizer")
+st.title("🏗️ Hybrid Pool: ID-Matched Production Dashboard")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -79,7 +80,7 @@ if not st.session_state.inventory.empty:
         valid_batches = batch_lookup[batch_lookup >= total_roll_ft].index.tolist()
 
         if not valid_batches:
-            st.error(f"❌ Material Shortage: No single Date Code has {total_roll_ft:.2f}ft available.")
+            st.error(f"❌ Material Shortage: No single Batch has {total_roll_ft:.2f}ft available.")
         else:
             selected_batch = batch_lookup[valid_batches].idxmin()
             st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
@@ -88,8 +89,6 @@ if not st.session_state.inventory.empty:
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                
-                # Search for single rolls that fit the whole job
                 all_eligible_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
@@ -98,23 +97,21 @@ if not st.session_state.inventory.empty:
 
                 if not all_eligible_rolls.empty:
                     pick = all_eligible_rolls.iloc[0]
+                    target_id = str(pick['ID']) # Reference for SC matching
                     st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
                     
-                    # Cut Map Visualization
                     remnant = round(pick['Length'] - total_roll_ft, 2)
                     v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c:.2f}'")
                     
-                    # RESTORED: ALTERNATE SINGLE ROLL OPTIONS
                     if len(all_eligible_rolls) > 1:
-                        with st.expander("🔄 Show other single-roll options for this batch"):
+                        with st.expander("🔄 Show other single-roll options"):
                             other_display = all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']].copy()
                             st.dataframe(other_display.style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
                 else:
-                    # MULTI-ROLL BREAKDOWN (FAIL-SAFE)
+                    target_id = "" # No single roll found
                     st.warning(f"⚠️ No single roll in Batch {selected_batch} is long enough.")
-                    st.write("You must split the job. Here are all available rolls in this batch:")
                     batch_rolls = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                         (st.session_state.inventory['DateCode'] == selected_batch)
@@ -123,15 +120,27 @@ if not st.session_state.inventory.empty:
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
-                st.markdown("**Batch Matches:**")
+                st.markdown("**Closest ID Matches:**")
+                
+                # SECTION: ID-MATCHED SC PULLS
                 for _, row in sc_needed.iterrows():
-                    match = st.session_state.inventory[
+                    match_pool = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
                         (st.session_state.inventory['Length'] == row['Length']) &
                         (st.session_state.inventory['DateCode'] == selected_batch)
-                    ]
-                    if not match.empty:
-                        st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {match.iloc[0]['ID']})")
+                    ].copy()
+                    
+                    if not match_pool.empty:
+                        # Logic to find the closest ID string to the selected Roll ID
+                        if target_id:
+                            match_pool['similarity'] = match_pool['ID'].apply(
+                                lambda x: difflib.SequenceMatcher(None, str(x), target_id).ratio()
+                            )
+                            best_sc = match_pool.sort_values(by='similarity', ascending=False).iloc[0]
+                        else:
+                            best_sc = match_pool.iloc[0]
+                            
+                        st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {best_sc['ID']})")
                     else:
                         st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN BATCH")
 
