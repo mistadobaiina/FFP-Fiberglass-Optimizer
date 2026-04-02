@@ -5,7 +5,7 @@ import pandas as pd
 SCRAP_THRESHOLD = 4.0 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool: Wall & SC Production Planner")
+st.title("🏗️ Hybrid Pool: Full Production & Inventory Dashboard")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -29,7 +29,7 @@ if not st.session_state.inventory.empty:
 
     st.subheader("Step 2: Enter Wall List")
     
-    # Pre-fill with a standard rectangle example
+    # Standard Rectangle Template
     input_df = pd.DataFrame([
         {"Length": 12.0, "Use_SC": False},
         {"Length": 12.0, "Use_SC": False},
@@ -71,21 +71,27 @@ if not st.session_state.inventory.empty:
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                best_rolls = st.session_state.inventory[
+                # Find all rolls in this batch that fit
+                all_eligible_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
                     (st.session_state.inventory['Length'] >= total_roll_ft)
                 ].sort_values(by='Length')
 
-                if not best_rolls.empty:
-                    pick = best_rolls.iloc[0]
-                    st.info(f"**Pull Roll: {pick['ID']}**")
+                if not all_eligible_rolls.empty:
+                    pick = all_eligible_rolls.iloc[0]
+                    st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']} ft)")
                     
-                    # Visualization (Cuts only)
-                    remnant = pick['Length'] - total_roll_ft
-                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5]) # Tiny buffer for visual
+                    # Cut Map Visualization
+                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c}'")
+                    
+                    # --- NEW/RESTORED: OTHER OPTIONS SECTION ---
+                    if len(all_eligible_rolls) > 1:
+                        with st.expander("🔄 Show other roll options for this batch"):
+                            st.write("If the recommended roll is unavailable, use one of these:")
+                            st.dataframe(all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']], hide_index=True)
                 else:
                     st.warning("Batch footage is split across multiple rolls.")
 
@@ -106,22 +112,17 @@ if not st.session_state.inventory.empty:
             st.divider()
             st.subheader("📋 Roll Usage Summary")
             
-            summary_c1, summary_c2, summary_c3 = st.columns(3)
-            
-            with summary_c1:
-                st.metric("Total Used", f"{total_roll_ft} ft")
-            
             if 'pick' in locals():
-                with summary_c2:
-                    if remnant >= SCRAP_THRESHOLD:
-                        st.metric("New Remnant Length", f"{remnant} ft", delta="REUSABLE", delta_color="normal")
-                    else:
-                        st.metric("Scrap Generated", f"{remnant} ft", delta="SCRAP", delta_color="inverse")
+                remnant = pick['Length'] - total_roll_ft
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Total Used", f"{total_roll_ft} ft")
                 
-                with summary_c3:
-                    status = "✅ Re-label & Restock" if remnant >= SCRAP_THRESHOLD else "🗑️ Dispose of Waste"
-                    st.write(f"**Action Required:**")
-                    st.write(status)
+                if remnant >= SCRAP_THRESHOLD:
+                    s2.metric("New Remnant", f"{remnant} ft", delta="REUSABLE", delta_color="normal")
+                    s3.write("**Action:** Re-label & Restock")
+                else:
+                    s2.metric("Waste (Scrap)", f"{remnant} ft", delta="SCRAP", delta_color="inverse")
+                    s3.write("**Action:** Dispose of Waste")
 
 else:
     st.info("Upload your inventory CSV in the sidebar.")
