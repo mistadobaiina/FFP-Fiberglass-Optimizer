@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import difflib
+import re
 
 # --- CONFIGURATION ---
 SCRAP_THRESHOLD = 4.00 
@@ -71,41 +72,79 @@ if not st.session_state.inventory.empty:
         roll_cuts_needed = sorted(production_table[production_table['Use_SC'] == False]['Length'].tolist(), reverse=True)
         total_roll_ft = round(sum(roll_cuts_needed), 2)
 
-        # --- PRIORITY 1: FILTER BY COLOR, WIDTH, AND DATE CODE ---
-        # Get only items that match the user's primary specs
+        # Apply Hard Constraints first
         master_filtered = st.session_state.inventory[
             (st.session_state.inventory['Color'] == p_color) & 
             (st.session_state.inventory['Width'] == p_width)
-        ]
+        ].copy()
 
-        batch_lookup = master_filtered.groupby('DateCode')['Length'].sum()
-        valid_batches = batch_lookup[batch_lookup >= total_roll_ft].index.tolist()
+        # --- PRIORITY 1: LOT ID EXTRACTION (4 NUMERALS) ---
+        def get_base_lot(row):
+            # Look for 4 consecutive numerals in DateCode
+            match = re.search(r'(\d{4})', str(row['DateCode']))
+            if match: return match.group(1)
+            # Fallback: Look in ID just in case
+            match = re.search(r'(\d{4})', str(row['ID']))
+            if match: return match.group(1)
+            return str(row['DateCode']) # Failsafe
 
-        if not valid_batches:
-            st.error(f"❌ Material Shortage: No {p_width}in {p_color} Batch has {total_roll_ft:.2f}ft available.")
+        master_filtered['BaseLot'] = master_filtered.apply(get_base_lot, axis=1)
+
+        # --- SCORE EVERY LOT ---
+        lot_scores = []
+        for lot, group in master_filtered.groupby('BaseLot'):
+            # Check Roll requirement
+            roll_ft = group[group['Type'].str.upper() == 'ROLL']['Length'].sum()
+            if roll_ft < total_roll_ft:
+                continue 
+                
+            # Check SC requirement (Count how many required SCs exist in this lot)
+            sc_group = group[group['Type'].str.upper() == 'SC'].copy()
+            scs_found = 0
+            for _, row in sc_needed.iterrows():
+                match = sc_group[sc_group['Length'] == row['Length']]
+                if not match.empty:
+                    scs_found += 1
+                    sc_group = sc_group.drop(match.index[0]) # Consume to prevent double counting
+                    
+            # Calculate Waste
+            single_rolls = group[(group['Type'].str.upper() == 'ROLL') & (group['Length'] >= total_roll_ft)]
+            min_waste = (single_rolls['Length'].min() - total_roll_ft) if not single_rolls.empty else 99999
+                
+            lot_scores.append({
+                'BaseLot': lot,
+                'SC_Matches': scs_found,
+                'Min_Waste': min_waste
+            })
+
+        lot_df = pd.DataFrame(lot_scores)
+
+        if lot_df.empty:
+            st.error(f"❌ Material Shortage: No Base Lot ID has {total_roll_ft:.2f}ft of {p_width}in {p_color} available.")
         else:
-            selected_batch = batch_lookup[valid_batches].idxmin()
-            st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
+            # Sort Lots: 1. Max SC Matches, 2. Lowest Waste
+            best_lot_row = lot_df.sort_values(by=['SC_Matches', 'Min_Waste'], ascending=[False, True]).iloc[0]
+            selected_base_lot = best_lot_row['BaseLot']
+            
+            st.success(f"✅ **Base Lot Match Found:** Using Lot ID **{selected_base_lot}**")
+            if best_lot_row['SC_Matches'] < len(sc_needed):
+                st.warning(f"⚠️ This Lot has the roll footage, but is missing some required SCs. You will need to substitute SCs from another lot below.")
+
+            winning_lot_inventory = master_filtered[master_filtered['BaseLot'] == selected_base_lot].copy()
 
             roll_col, sc_col = st.columns([2, 1])
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                
-                # Get only rolls in the selected BATCH that match COLOR and WIDTH
-                batch_rolls = master_filtered[
-                    (master_filtered['Type'].str.upper() == 'ROLL') & 
-                    (master_filtered['DateCode'] == selected_batch)
-                ].copy()
-
-                eligible_single_rolls = batch_rolls[batch_rolls['Length'] >= total_roll_ft].sort_values(by='ID')
+                batch_rolls = winning_lot_inventory[winning_lot_inventory['Type'].str.upper() == 'ROLL']
+                eligible_single_rolls = batch_rolls[batch_rolls['Length'] >= total_roll_ft]
 
                 if not eligible_single_rolls.empty:
-                    # PRIORITY: Shortest length that fits (Minimize waste)
+                    # Priority 3: Minimize length applied here
                     pick = eligible_single_rolls.sort_values(by=['Length']).iloc[0]
                     target_roll_id = str(pick['ID'])
                     
-                    st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
+                    st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft) [Lot: {pick['DateCode']}]")
                     
                     remnant = round(pick['Length'] - total_roll_ft, 2)
                     v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
@@ -113,41 +152,40 @@ if not st.session_state.inventory.empty:
                         v_cols[i].info(f"{c:.2f}'")
                     
                     if len(eligible_single_rolls) > 1:
-                        with st.expander(f"🔄 Other {p_width}in {p_color} rolls in this batch"):
-                            st.dataframe(eligible_single_rolls.style.format({"Length": "{:.2f}"}), hide_index=True)
+                        with st.expander(f"🔄 Other {p_width}in {p_color} rolls in Base Lot {selected_base_lot}"):
+                            st.dataframe(eligible_single_rolls[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True)
                 else:
                     target_roll_id = ""
-                    st.warning(f"⚠️ Multi-Roll Split Required (No single {p_width}in roll is long enough).")
-                    st.write(f"All available {p_width}in {p_color} rolls in Batch {selected_batch}:")
-                    st.dataframe(batch_rolls[['ID', 'Length']].sort_values(by='ID'), hide_index=True)
+                    st.warning(f"⚠️ Multi-Roll Split Required.")
+                    st.dataframe(batch_rolls[['ID', 'Length', 'DateCode']].sort_values(by='ID'), hide_index=True)
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
-                st.markdown("**Matched SCs:**")
+                st.markdown(f"**Lot {selected_base_lot} Matches:**")
+                
+                available_scs = winning_lot_inventory[winning_lot_inventory['Type'].str.upper() == 'SC'].copy()
                 
                 for _, row in sc_needed.iterrows():
-                    # Filter SCs by LENGTH, BATCH, COLOR, and WIDTH
-                    sc_matches = master_filtered[
-                        (master_filtered['Type'].str.upper() == 'SC') & 
-                        (master_filtered['Length'] == row['Length']) &
-                        (master_filtered['DateCode'] == selected_batch)
-                    ].copy()
+                    sc_matches = available_scs[available_scs['Length'] == row['Length']].copy()
                     
                     if not sc_matches.empty:
+                        # Priority 2: Match SC string to Roll string
                         if target_roll_id:
                             sc_matches['sim'] = sc_matches['ID'].apply(
                                 lambda x: difflib.SequenceMatcher(None, str(x), target_roll_id).ratio()
                             )
                             best_sc = sc_matches.sort_values(by='sim', ascending=False).iloc[0]
                         else:
-                            best_sc = sc_matches.iloc[0]
+                            best_sc = sc_matches.sort_values(by='ID').iloc[0]
                             
-                        st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {best_sc['ID']})")
+                        st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {best_sc['ID']} | Lot: {best_sc['DateCode']})")
+                        # Consume the piece so it isn't listed twice
+                        available_scs = available_scs.drop(best_sc.name)
                     else:
                         st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN BATCH")
 
                 with st.expander(f"🔍 Global {p_width}in {p_color} SC Inventory"):
-                    all_scs = master_filtered[master_filtered['Type'].str.upper() == 'SC'].sort_values(by=['DateCode', 'Length'])
+                    all_scs = master_filtered[master_filtered['Type'].str.upper() == 'SC'].sort_values(by=['BaseLot', 'Length'])
                     st.dataframe(all_scs[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
 
             # --- 5. CLEAN SUMMARY ---
