@@ -79,16 +79,16 @@ if not st.session_state.inventory.empty:
         valid_batches = batch_lookup[batch_lookup >= total_roll_ft].index.tolist()
 
         if not valid_batches:
-            st.error(f"❌ Material Shortage: No single Batch has {total_roll_ft:.2f}ft available.")
+            st.error(f"❌ Material Shortage: No single Date Code has {total_roll_ft:.2f}ft available.")
         else:
             selected_batch = batch_lookup[valid_batches].idxmin()
             st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
 
-            # --- 4. THE PULL LISTS ---
             roll_col, sc_col = st.columns([2, 1])
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
+                # Single roll search
                 all_eligible_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
@@ -98,20 +98,19 @@ if not st.session_state.inventory.empty:
                 if not all_eligible_rolls.empty:
                     pick = all_eligible_rolls.iloc[0]
                     st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
-                    
-                    # RESTORED VISUALIZATION MAP
                     remnant = round(pick['Length'] - total_roll_ft, 2)
-                    # We create columns based on the cuts + one for the remnant
-                    v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
+                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c:.2f}'")
-                    
-                    if len(all_eligible_rolls) > 1:
-                        with st.expander("🔄 Show other roll options"):
-                            other_display = all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']].copy()
-                            st.dataframe(other_display.style.format({"Length": "{:.2f}"}), hide_index=True)
                 else:
-                    st.warning("Batch footage is split across multiple rolls.")
+                    # NEW: SHOW MULTI-ROLL OPTIONS IF SINGLE MATCH FAILS
+                    st.warning(f"⚠️ Single Roll Match Failed for Batch {selected_batch}.")
+                    st.write("You must split the job across multiple rolls. Here are the available rolls in this batch:")
+                    batch_rolls = st.session_state.inventory[
+                        (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
+                        (st.session_state.inventory['DateCode'] == selected_batch)
+                    ].sort_values(by='Length', ascending=False)
+                    st.dataframe(batch_rolls[['ID', 'Length', 'Width']], hide_index=True, use_container_width=True)
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
@@ -141,13 +140,14 @@ if not st.session_state.inventory.empty:
             if 'pick' in locals():
                 s1, s2, s3 = st.columns(3)
                 s1.metric("Total Used", f"{total_roll_ft:.2f} ft")
-                
                 if remnant >= SCRAP_THRESHOLD:
                     s2.metric("New Remnant", f"{remnant:.2f} ft", delta="REUSABLE", delta_color="normal")
                     s3.write("**Action:** Re-label & Restock")
                 else:
                     s2.metric("Waste (Scrap)", f"{remnant:.2f} ft", delta="SCRAP", delta_color="inverse")
                     s3.write("**Action:** Dispose of Waste")
+            else:
+                st.write("Summary unavailable: Job requires splitting across multiple rolls.")
 
 else:
     st.info("Upload your inventory CSV in the sidebar.")
