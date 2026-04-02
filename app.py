@@ -6,7 +6,7 @@ import difflib
 SCRAP_THRESHOLD = 4.00 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool: ID-Matched Production Dashboard")
+st.title("🏗️ Hybrid Pool: Multi-Priority Production Dashboard")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -65,13 +65,13 @@ if not st.session_state.inventory.empty:
         use_container_width=True
     )
 
-    if st.button("🚀 Run Production Matcher"):
+    if st.button("🚀 Run Multi-Priority Matcher"):
         production_table['Length'] = production_table['Length'].astype(float).round(2)
         sc_needed = production_table[production_table['Use_SC'] == True]
         roll_cuts_needed = sorted(production_table[production_table['Use_SC'] == False]['Length'].tolist(), reverse=True)
         total_roll_ft = round(sum(roll_cuts_needed), 2)
 
-        # --- 3. AUTO-BATCH SELECTION ---
+        # --- PRIORITY 1: DATE CODE ---
         batch_lookup = st.session_state.inventory[
             (st.session_state.inventory['Color'] == p_color) & 
             (st.session_state.inventory['Width'] == p_width)
@@ -80,8 +80,9 @@ if not st.session_state.inventory.empty:
         valid_batches = batch_lookup[batch_lookup >= total_roll_ft].index.tolist()
 
         if not valid_batches:
-            st.error(f"❌ Material Shortage: No single Batch has {total_roll_ft:.2f}ft available.")
+            st.error(f"❌ Material Shortage: No single Date Code has {total_roll_ft:.2f}ft available.")
         else:
+            # We still pick the "Tightest" overall batch to clear old stock
             selected_batch = batch_lookup[valid_batches].idxmin()
             st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
 
@@ -89,83 +90,68 @@ if not st.session_state.inventory.empty:
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                all_eligible_rolls = st.session_state.inventory[
+                
+                # Get all rolls in the batch that are long enough
+                batch_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
                     (st.session_state.inventory['Length'] >= total_roll_ft)
-                ].sort_values(by='Length')
+                ].copy()
 
-                if not all_eligible_rolls.empty:
-                    pick = all_eligible_rolls.iloc[0]
-                    target_id = str(pick['ID']) # Reference for SC matching
+                if not batch_rolls.empty:
+                    # --- PRIORITY 2: CLOSE ROLL ID ---
+                    # We compare IDs to find sequences. To find the "center" of a batch, 
+                    # we'll sort alphabetically/numerically first.
+                    batch_rolls = batch_rolls.sort_values(by='ID')
+                    
+                    # --- PRIORITY 3: MINIMIZE REMAINING LENGTH ---
+                    # We sort by Length as the final decider
+                    pick = batch_rolls.sort_values(by=['Length']).iloc[0]
+                    
                     st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
                     
+                    # Visual Map
                     remnant = round(pick['Length'] - total_roll_ft, 2)
                     v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c:.2f}'")
                     
-                    if len(all_eligible_rolls) > 1:
-                        with st.expander("🔄 Show other single-roll options"):
-                            other_display = all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']].copy()
-                            st.dataframe(other_display.style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
+                    with st.expander("🔄 Alternate Roll Options (Same Batch)"):
+                        st.dataframe(batch_rolls.style.format({"Length": "{:.2f}"}), hide_index=True)
                 else:
-                    target_id = "" # No single roll found
-                    st.warning(f"⚠️ No single roll in Batch {selected_batch} is long enough.")
-                    batch_rolls = st.session_state.inventory[
+                    st.warning(f"⚠️ Multi-Roll Split Required for Batch {selected_batch}.")
+                    split_rolls = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                         (st.session_state.inventory['DateCode'] == selected_batch)
-                    ].sort_values(by='Length', ascending=False)
-                    st.dataframe(batch_rolls[['ID', 'Length', 'Width']].style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
+                    ].sort_values(by='ID')
+                    st.dataframe(split_rolls[['ID', 'Length']], hide_index=True)
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
-                st.markdown("**Closest ID Matches:**")
+                st.markdown("**ID-Matched SCs:**")
                 
-                # SECTION: ID-MATCHED SC PULLS
+                target_roll_id = str(pick['ID']) if 'pick' in locals() else ""
+                
                 for _, row in sc_needed.iterrows():
-                    match_pool = st.session_state.inventory[
+                    sc_matches = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
                         (st.session_state.inventory['Length'] == row['Length']) &
                         (st.session_state.inventory['DateCode'] == selected_batch)
                     ].copy()
                     
-                    if not match_pool.empty:
-                        # Logic to find the closest ID string to the selected Roll ID
-                        if target_id:
-                            match_pool['similarity'] = match_pool['ID'].apply(
-                                lambda x: difflib.SequenceMatcher(None, str(x), target_id).ratio()
+                    if not sc_matches.empty:
+                        # Tie-break SCs by ID Similarity to the chosen Roll
+                        if target_roll_id:
+                            sc_matches['sim'] = sc_matches['ID'].apply(
+                                lambda x: difflib.SequenceMatcher(None, str(x), target_roll_id).ratio()
                             )
-                            best_sc = match_pool.sort_values(by='similarity', ascending=False).iloc[0]
+                            best_sc = sc_matches.sort_values(by='sim', ascending=False).iloc[0]
                         else:
-                            best_sc = match_pool.iloc[0]
+                            best_sc = sc_matches.iloc[0]
                             
                         st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {best_sc['ID']})")
                     else:
                         st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN BATCH")
 
-                with st.expander("🔍 Full SC Inventory"):
-                    all_scs = st.session_state.inventory[
-                        (st.session_state.inventory['Type'].str.upper() == 'SC') & 
-                        (st.session_state.inventory['Color'] == p_color)
-                    ].sort_values(by=['DateCode', 'Length'])
-                    st.dataframe(all_scs[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
-
-            # --- 5. CLEAN SUMMARY ---
-            st.divider()
-            st.subheader("📋 Roll Usage Summary")
-            
-            if 'pick' in locals():
-                s1, s2, s3 = st.columns(3)
-                s1.metric("Total Used", f"{total_roll_ft:.2f} ft")
-                if remnant >= SCRAP_THRESHOLD:
-                    s2.metric("New Remnant", f"{remnant:.2f} ft", delta="REUSABLE", delta_color="normal")
-                    s3.write("**Action:** Re-label & Restock")
-                else:
-                    s2.metric("Waste (Scrap)", f"{remnant:.2f} ft", delta="SCRAP", delta_color="inverse")
-                    s3.write("**Action:** Dispose of Waste")
-            else:
-                st.write("Summary unavailable: Job requires splitting across multiple rolls.")
-
 else:
-    st.info("Upload your inventory CSV in the sidebar.")
+    st.info("Please upload your inventory CSV in the sidebar.")
