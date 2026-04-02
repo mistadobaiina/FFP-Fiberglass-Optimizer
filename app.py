@@ -80,6 +80,7 @@ if not st.session_state.inventory.empty:
             (st.session_state.inventory['Width'] == p_width)
         ].copy()
 
+        # --- PRIORITY 1: LOT ID EXTRACTION (4 NUMERALS) ---
         def get_base_lot(row):
             match = re.search(r'(\d{4})', str(row['DateCode']))
             if match: return match.group(1)
@@ -91,7 +92,6 @@ if not st.session_state.inventory.empty:
 
         lot_scores = []
         for lot, group in master_filtered.groupby('BaseLot'):
-            # Check for standard match (Roll + SC pieces)
             sc_group = group[group['Type'].str.upper() == 'SC'].copy()
             scs_found = 0
             for req_len in sc_reqs:
@@ -100,17 +100,11 @@ if not st.session_state.inventory.empty:
                     scs_found += 1
                     sc_group = sc_group.drop(match.index[0])
 
-            # Roll Check
             rolls = group[group['Type'].str.upper() == 'ROLL']
-            
-            # Standard: Can we fit the standard total?
             can_fit_std = not rolls[rolls['Length'] >= standard_roll_total].empty
-            # Fallback: Can we fit the absolute total (Rolls + SCs from one roll)?
             can_fit_fallback = not rolls[rolls['Length'] >= fallback_total].empty
 
             if can_fit_std or can_fit_fallback:
-                # We prioritize lots that have the most physical SC matches first
-                # If tied, we prioritize the lot that can handle a single-roll fallback
                 lot_scores.append({
                     'BaseLot': lot,
                     'SC_Matches': scs_found,
@@ -123,17 +117,12 @@ if not st.session_state.inventory.empty:
         if lot_df.empty:
             st.error("❌ No suitable material found in inventory for these specs.")
         else:
-            # Picking logic: 
-            # 1. Most SC matches 
-            # 2. If no SC matches, Lot that has a roll long enough for EVERYTHING
-            # 3. Smallest sufficient roll (Minimize waste)
             best_lot_row = lot_df.sort_values(by=['SC_Matches', 'Can_Fallback', 'Max_Single_Roll'], ascending=[False, False, True]).iloc[0]
             selected_base_lot = best_lot_row['BaseLot']
             
             winning_lot_inventory = master_filtered[master_filtered['BaseLot'] == selected_base_lot].copy()
             available_rolls = winning_lot_inventory[winning_lot_inventory['Type'].str.upper() == 'ROLL']
             
-            # Determine if we are using fallback or standard
             actual_sc_matches = []
             temp_sc_bin = winning_lot_inventory[winning_lot_inventory['Type'].str.upper() == 'SC'].copy()
             for req_len in sc_reqs:
@@ -142,15 +131,12 @@ if not st.session_state.inventory.empty:
                     actual_sc_matches.append(match.iloc[0])
                     temp_sc_bin = temp_sc_bin.drop(match.index[0])
 
-            # Final check: Do we have all SCs?
             all_scs_present = len(actual_sc_matches) == len(sc_reqs)
             
-            # Decide what goes into the "Cut Map"
             if all_scs_present:
                 final_cuts = roll_reqs
                 mode_label = "Standard Match"
             else:
-                # Add the missing SC lengths to the roll cuts
                 missing_sc_lengths = sc_reqs[len(actual_sc_matches):]
                 final_cuts = sorted(roll_reqs + missing_sc_lengths, reverse=True)
                 mode_label = f"Fallback Match (Cutting {len(missing_sc_lengths)} SCs from Roll)"
@@ -162,26 +148,20 @@ if not st.session_state.inventory.empty:
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
                 total_needed = sum(final_cuts)
-                
-                # Fetch eligible rolls and sort by length to minimize waste
                 eligible_single_rolls = available_rolls[available_rolls['Length'] >= total_needed].sort_values(by='Length')
                 
                 if not eligible_single_rolls.empty:
                     pick = eligible_single_rolls.iloc[0]
-                    target_roll_id = str(pick['ID'])
-
                     st.info(f"**Roll: {pick['ID']}** ({pick['Length']:.2f} ft) [Lot: {pick['DateCode']}]")
                     remnant = round(pick['Length'] - total_needed, 2)
                     v_cols = st.columns([float(c) for c in final_cuts] + [max(remnant, 0.5)])
                     for i, c in enumerate(final_cuts):
                         v_cols[i].info(f"{c:.2f}'")
                         
-                    # --- RESTORED ALTERNATE OPTIONS ---
                     if len(eligible_single_rolls) > 1:
                         with st.expander(f"🔄 Other {p_width}in {p_color} rolls in Lot {selected_base_lot}"):
                             st.dataframe(eligible_single_rolls[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True)
                 else:
-                    target_roll_id = ""
                     st.warning("⚠️ No single roll long enough. Multi-roll split required.")
                     st.dataframe(available_rolls[['ID', 'Length', 'DateCode']].sort_values(by='ID'), hide_index=True)
 
@@ -190,12 +170,15 @@ if not st.session_state.inventory.empty:
                 for sc in actual_sc_matches:
                     st.write(f"✅ **{sc['Length']:.2f}' SC** (ID: {sc['ID']})")
                 
-                # Show errors for SCs we are forcing onto the roll
                 if not all_scs_present:
                     for i in range(len(sc_reqs) - len(actual_sc_matches)):
                         st.warning("⚠️ Manual cut from roll")
 
-            # Summary
+                # --- RESTORED SC GLOBAL OPTIONS ---
+                with st.expander(f"🔍 Global {p_width}in {p_color} SC Inventory"):
+                    all_scs = master_filtered[master_filtered['Type'].str.upper() == 'SC'].sort_values(by=['BaseLot', 'Length'])
+                    st.dataframe(all_scs[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
+
             st.divider()
             s1, s2, s3 = st.columns(3)
             s1.metric("Total Used", f"{total_needed:.2f} ft")
