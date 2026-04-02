@@ -5,7 +5,7 @@ import pandas as pd
 SCRAP_THRESHOLD = 4.00 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool: Full Production & Inventory Dashboard")
+st.title("FFP: Fiberglass Roll Optimizer")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
