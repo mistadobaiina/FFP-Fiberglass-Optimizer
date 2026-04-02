@@ -5,7 +5,7 @@ import pandas as pd
 SCRAP_THRESHOLD = 4.00 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool: Production Shape Optimizer")
+st.title("🏗️ Hybrid Pool: Full Production & Inventory Dashboard")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -34,33 +34,26 @@ if not st.session_state.inventory.empty:
     st.divider()
     st.subheader(f"Step 2: Enter {pool_type} Dimensions")
     
-    # Logic to build the wall list based on pool type
     wall_data = []
-    
     if pool_type == "Rectangle with SC":
         col_len, col_wid = st.columns(2)
         with col_len:
             rect_l = st.number_input("Straight Wall Length (ft)", min_value=1.0, value=20.0, step=0.5)
         with col_wid:
             rect_w = st.number_input("Corner Wall Width (ft) - Will use SC", min_value=1.0, value=12.0, step=0.5)
-        
-        # Build the 4-wall list (2 lengths from roll, 2 widths from SC)
         wall_data = [
             {"Length": rect_l, "Use_SC": False},
             {"Length": rect_l, "Use_SC": False},
             {"Length": rect_w, "Use_SC": True},
             {"Length": rect_w, "Use_SC": True}
         ]
-        
     elif pool_type == "Rectangle w/out SC":
         total_p = st.number_input("Total Continuous Perimeter (ft)", min_value=1.0, value=64.0, step=0.5)
         wall_data = [{"Length": total_p, "Use_SC": False}]
-        
     elif pool_type == "Freeform":
         total_f = st.number_input("Total Perimeter Length (ft)", min_value=1.0, value=80.0, step=0.5)
         wall_data = [{"Length": total_f, "Use_SC": False}]
 
-    # Display the generated list for confirmation
     production_table = st.data_editor(
         pd.DataFrame(wall_data), 
         num_rows="dynamic", 
@@ -71,8 +64,7 @@ if not st.session_state.inventory.empty:
         use_container_width=True
     )
 
-    if st.button("🚀 Calculate Production Plan"):
-        # Formatting
+    if st.button("🚀 Run Production Matcher"):
         production_table['Length'] = production_table['Length'].astype(float).round(2)
         sc_needed = production_table[production_table['Use_SC'] == True]
         roll_cuts_needed = sorted(production_table[production_table['Use_SC'] == False]['Length'].tolist(), reverse=True)
@@ -107,8 +99,10 @@ if not st.session_state.inventory.empty:
                     pick = all_eligible_rolls.iloc[0]
                     st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
                     
-                    # Cut Map Visualization
-                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5])
+                    # RESTORED VISUALIZATION MAP
+                    remnant = round(pick['Length'] - total_roll_ft, 2)
+                    # We create columns based on the cuts + one for the remnant
+                    v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c:.2f}'")
                     
@@ -145,7 +139,6 @@ if not st.session_state.inventory.empty:
             st.subheader("📋 Roll Usage Summary")
             
             if 'pick' in locals():
-                remnant = round(pick['Length'] - total_roll_ft, 2)
                 s1, s2, s3 = st.columns(3)
                 s1.metric("Total Used", f"{total_roll_ft:.2f} ft")
                 
