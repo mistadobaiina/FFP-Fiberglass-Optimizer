@@ -1,64 +1,98 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import io
 
-# --- DATABASE INITIALIZATION ---
-# In a real scenario, this would load from a CSV file on your drive
-if 'job_history' not in st.session_state:
-    st.session_state.job_history = []
+# --- CONFIGURATION ---
+SCRAP_THRESHOLD = 4.0  # Feet
 
-SCRAP_THRESHOLD = 4.0
+st.set_page_config(page_title="Pool Inventory Optimizer", layout="wide")
+st.title("🏗️ Hybrid Pool Inventory & Cut Manager")
 
-st.title("🏊 Hybrid Pool Project Ledger")
+# --- SECTION 1: INVENTORY UPLOAD ---
+st.header("Step 1: Sync Shop Inventory")
+uploaded_file = st.file_uploader("Upload 'current_inventory.csv'", type=["csv"])
 
-# --- SIDEBAR: HISTORY VIEWER ---
+# Initialize session state for inventory
+if 'inventory' not in st.session_state:
+    st.session_state.inventory = pd.DataFrame(columns=["ID", "Width", "Color", "DateCode", "Length"])
+
+if uploaded_file is not None:
+    # Load the uploaded CSV into the app's memory
+    st.session_state.inventory = pd.read_csv(uploaded_file)
+    st.success(f"Loaded {len(st.session_state.inventory)} rolls from CSV.")
+
+# --- SIDEBAR: TEMPLATE GENERATOR ---
 with st.sidebar:
-    st.header("📜 Job History")
-    if st.session_state.job_history:
-        history_df = pd.DataFrame(st.session_state.job_history)
-        st.dataframe(history_df[['Job Name', 'Date', 'Color', 'Total Ft']])
-    else:
-        st.write("No jobs recorded yet.")
-
-# --- STEP 1: JOB DETAILS ---
-st.header("Step 1: Project Info")
-col_a, col_b = st.columns(2)
-with col_a:
-    job_name = st.text_input("Client Name / Job ID", placeholder="e.g. Miller - Dayton")
-with col_b:
-    install_date = st.date_input("Installation Date", datetime.now())
-
-# --- STEP 2: MATERIAL & CUTS ---
-st.header("Step 2: Material Specs")
-c1, c2, c3 = st.columns(3)
-with c1:
-    color = st.selectbox("Fiberglass Color", ["Blue", "Grey", "White"])
-with c2:
-    width = st.selectbox("Width (inches)", [43, 48])
-with c3:
-    batch = st.text_input("Date Code / Batch #", "2026-04-A")
-
-wall_input = st.text_input("Enter Wall Cuts (comma separated)", "12, 12, 10")
-
-# --- STEP 3: OPTIMIZE & SAVE ---
-if st.button("Finalize Job & Save to History"):
-    cuts = [float(x.strip()) for x in wall_input.split(",")]
-    total_ft = sum(cuts)
+    st.header("Admin Tools")
+    # Create a dummy template for the user to download
+    template = pd.DataFrame({
+        "ID": ["R-101", "R-102"],
+        "Width": [43, 48],
+        "Color": ["Blue", "Grey"],
+        "DateCode": ["2026-04-A", "2026-04-B"],
+        "Length": [150.0, 150.0]
+    })
+    csv_template = template.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download CSV Template", data=csv_template, file_name="inventory_template.csv")
     
-    # Visualization (Simplified for the Ledger)
-    st.success(f"Project '{job_name}' Processed.")
+    st.write("---")
+    st.write("### Active Inventory View")
+    st.dataframe(st.session_state.inventory)
+
+# --- SECTION 2: PROJECT CUTTING ---
+st.header("Step 2: Project Optimization")
+
+if st.session_state.inventory.empty:
+    st.warning("Please upload an inventory CSV to begin.")
+else:
+    col1, col2, col3 = st.columns(3)
     
-    # Create the record
-    new_record = {
-        "Job Name": job_name,
-        "Date": install_date.strftime("%Y-%m-%d"),
-        "Color": color,
-        "Width": width,
-        "Batch": batch,
-        "Total Ft": total_ft,
-        "Cuts": str(cuts)
-    }
-    
-    # Save to Session (and potentially a CSV)
-    st.session_state.job_history.append(new_record)
-    st.balloons() # Visual confirmation for the crew
+    with col1:
+        p_color = st.selectbox("Select Color", st.session_state.inventory['Color'].unique())
+    with col2:
+        p_width = st.selectbox("Select Width", st.session_state.inventory['Width'].unique())
+    with col3:
+        # Filter batches based on color/width
+        batches = st.session_state.inventory[
+            (st.session_state.inventory['Color'] == p_color) & 
+            (st.session_state.inventory['Width'] == p_width)
+        ]['DateCode'].unique()
+        selected_batch = st.selectbox("Select Date Code", batches)
+
+    wall_input = st.text_input("Enter Wall Lengths (e.g. 12, 12, 10)", "12, 10")
+
+    if st.button("Calculate Cuts"):
+        cuts = sorted([float(x.strip()) for x in wall_input.split(",")], reverse=True)
+        
+        # Get the specific rolls for this batch
+        eligible_rolls = st.session_state.inventory[
+            (st.session_state.inventory['DateCode'] == selected_batch) & 
+            (st.session_state.inventory['Width'] == p_width)
+        ].to_dict('records')
+
+        for roll in eligible_rolls:
+            st.subheader(f"Using Roll: {roll['ID']}")
+            current_len = roll['Length']
+            used = []
+            
+            for cut in cuts[:]:
+                if cut <= current_len:
+                    used.append(cut)
+                    current_len -= cut
+                    cuts.remove(cut)
+            
+            if used:
+                # Visualization
+                st.write(f"✅ Cut Map: {used}")
+                remnant = current_len
+                
+                # Visual Bar
+                cols = st.columns([c for c in used] + [remnant if remnant > 0 else 0.1])
+                for i, c in enumerate(used):
+                    cols[i].info(f"{c} ft")
+                
+                if remnant < SCRAP_THRESHOLD:
+                    cols[-1].error(f"SCRAP: {remnant} ft")
+                else:
+                    cols[-1].success(f"REMNANT: {remnant} ft")
