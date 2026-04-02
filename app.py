@@ -5,7 +5,7 @@ import pandas as pd
 SCRAP_THRESHOLD = 4.0 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool Shop: Auto-Batch & SC Dashboard")
+st.title("🏗️ Hybrid Pool: Wall & SC Production Planner")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -16,84 +16,101 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Shop CSV", type=["csv"])
     if uploaded_file:
         st.session_state.inventory = pd.read_csv(uploaded_file)
-        st.success("Inventory Loaded Successfully!")
+        st.success("Inventory Loaded!")
 
-# --- 2. PROJECT INPUTS ---
+# --- 2. PROJECT REQUIREMENTS ---
 if not st.session_state.inventory.empty:
     st.header("Step 1: Project Specs")
-    col_a, col_b = st.columns(2)
-    with col_a:
+    c1, c2 = st.columns(2)
+    with c1:
         p_color = st.selectbox("Pool Color", st.session_state.inventory['Color'].unique())
-    with col_b:
+    with c2:
         p_width = st.selectbox("Wall Width (in)", st.session_state.inventory['Width'].unique())
 
-    wall_input = st.text_input("Enter Required Wall Lengths (e.g. 15, 12, 10)", "12, 12, 10")
+    st.subheader("Step 2: Enter Wall List")
+    st.caption("Enter lengths and check 'Use SC' for corner pieces.")
     
-    if st.button("🚀 Run Optimizer"):
-        cuts = sorted([float(x.strip()) for x in wall_input.split(",")], reverse=True)
-        total_req = sum(cuts)
-        
+    # Create an editable table for wall inputs
+    input_df = pd.DataFrame([
+        {"Length": 12.0, "Use_SC": False},
+        {"Length": 12.0, "Use_SC": False},
+        {"Length": 4.0, "Use_SC": True},
+        {"Length": 4.0, "Use_SC": True}
+    ])
+    
+    production_table = st.data_editor(
+        input_df, 
+        num_rows="dynamic", 
+        column_config={
+            "Length": st.column_config.NumberColumn("Length (ft)", min_value=0.5, step=0.5),
+            "Use_SC": st.column_config.CheckboxColumn("Use SC?", default=False)
+        },
+        use_container_width=True
+    )
+
+    if st.button("🚀 Run Production Matcher"):
+        # Separate the items
+        sc_needed = production_table[production_table['Use_SC'] == True]
+        roll_cuts_needed = production_table[production_table['Use_SC'] == False]['Length'].tolist()
+        total_roll_ft = sum(roll_cuts_needed)
+
         # --- 3. AUTO-BATCH SELECTION ---
-        # Find which batches have enough total stock to complete the job
+        # Find which batches have enough TOTAL roll stock + the required SCs
         batch_lookup = st.session_state.inventory[
             (st.session_state.inventory['Color'] == p_color) & 
             (st.session_state.inventory['Width'] == p_width)
         ].groupby('DateCode')['Length'].sum()
 
-        valid_batches = batch_lookup[batch_lookup >= total_req].index.tolist()
+        valid_batches = batch_lookup[batch_lookup >= total_roll_ft].index.tolist()
 
         if not valid_batches:
-            st.error(f"❌ Material Shortage: No single Batch has {total_req}ft available in {p_color}.")
+            st.error(f"❌ Material Shortage: No single Batch has {total_roll_ft}ft available.")
         else:
-            # Select the batch that is the "Tightest Fit" (prioritize clearing small batches)
             selected_batch = batch_lookup[valid_batches].idxmin()
-            
-            st.divider()
-            
-            # --- 4. LAYOUT: ROLL OPTIMIZER (LEFT) & SC BIN (RIGHT) ---
-            main_col, sc_col = st.columns([2, 1])
+            st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
 
-            with main_col:
-                st.subheader(f"📊 Best Roll for Batch: {selected_batch}")
-                
-                # Find the shortest single roll in that batch that fits the whole job
+            # --- 4. LAYOUT: PULL LISTS ---
+            roll_col, sc_col = st.columns([2, 1])
+
+            with roll_col:
+                st.subheader("✂️ Roll Cut Map")
+                # Find best roll for the non-SC walls
                 best_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
-                    (st.session_state.inventory['Length'] >= total_req)
+                    (st.session_state.inventory['Length'] >= total_roll_ft)
                 ].sort_values(by='Length')
 
                 if not best_rolls.empty:
                     pick = best_rolls.iloc[0]
-                    st.info(f"👉 **Pull Roll ID: {pick['ID']}** ({pick['Length']} ft total)")
+                    st.info(f"**Pull Roll: {pick['ID']}**")
                     
                     # Visualization
-                    remnant = pick['Length'] - total_req
-                    v_cols = st.columns([c for c in cuts] + [max(remnant, 0.5)])
-                    for i, c in enumerate(cuts):
+                    remnant = pick['Length'] - total_roll_ft
+                    v_cols = st.columns([c for c in sorted(roll_cuts_needed, reverse=True)] + [max(remnant, 0.5)])
+                    for i, c in enumerate(sorted(roll_cuts_needed, reverse=True)):
                         v_cols[i].info(f"{c}'")
                     
                     if remnant < SCRAP_THRESHOLD:
-                        v_cols[-1].error(f"SCRAP\n{remnant}'")
+                        v_cols[-1].error(f"SCRAP: {remnant}'")
                     else:
-                        v_cols[-1].success(f"REMNANT\n{remnant}'")
+                        v_cols[-1].success(f"REMNANT: {remnant}'")
                 else:
-                    st.warning("Batch has enough total material, but it's split across multiple rolls.")
+                    st.warning("Batch has enough total footage, but it's split across multiple rolls.")
 
             with sc_col:
-                st.subheader("📦 Matching SC Bin")
-                # Show only Square Corners that match the selected batch
-                sc_match = st.session_state.inventory[
-                    (st.session_state.inventory['Type'].str.upper() == 'SC') & 
-                    (st.session_state.inventory['Color'] == p_color) &
-                    (st.session_state.inventory['DateCode'] == selected_batch)
-                ]
-                
-                if not sc_match.empty:
-                    st.write(f"Pre-cut corners available in **{selected_batch}**:")
-                    st.dataframe(sc_match[['ID', 'Length']], hide_index=True, use_container_width=True)
-                else:
-                    st.write("No matching Square Corners in stock for this batch.")
+                st.subheader("📦 SC Pull List")
+                # Check if the requested SCs actually exist in this batch
+                for _, row in sc_needed.iterrows():
+                    match = st.session_state.inventory[
+                        (st.session_state.inventory['Type'].str.upper() == 'SC') & 
+                        (st.session_state.inventory['Length'] == row['Length']) &
+                        (st.session_state.inventory['DateCode'] == selected_batch)
+                    ]
+                    if not match.empty:
+                        st.write(f"✅ **{row['Length']}ft SC** (Item: {match.iloc[0]['ID']})")
+                    else:
+                        st.error(f"❌ **{row['Length']}ft SC** NOT IN STOCK for this batch.")
 
 else:
-    st.info("Please upload your inventory CSV in the sidebar to begin.")
+    st.info("Please upload your inventory CSV in the sidebar.")
