@@ -88,7 +88,8 @@ if not st.session_state.inventory.empty:
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                # Single roll search
+                
+                # Search for single rolls that fit the whole job
                 all_eligible_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
@@ -98,19 +99,27 @@ if not st.session_state.inventory.empty:
                 if not all_eligible_rolls.empty:
                     pick = all_eligible_rolls.iloc[0]
                     st.info(f"**Recommended Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
+                    
+                    # Cut Map Visualization
                     remnant = round(pick['Length'] - total_roll_ft, 2)
-                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5])
+                    v_cols = st.columns([c for c in roll_cuts_needed] + [max(remnant, 0.5)])
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c:.2f}'")
+                    
+                    # RESTORED: ALTERNATE SINGLE ROLL OPTIONS
+                    if len(all_eligible_rolls) > 1:
+                        with st.expander("🔄 Show other single-roll options for this batch"):
+                            other_display = all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']].copy()
+                            st.dataframe(other_display.style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
                 else:
-                    # NEW: SHOW MULTI-ROLL OPTIONS IF SINGLE MATCH FAILS
-                    st.warning(f"⚠️ Single Roll Match Failed for Batch {selected_batch}.")
-                    st.write("You must split the job across multiple rolls. Here are the available rolls in this batch:")
+                    # MULTI-ROLL BREAKDOWN (FAIL-SAFE)
+                    st.warning(f"⚠️ No single roll in Batch {selected_batch} is long enough.")
+                    st.write("You must split the job. Here are all available rolls in this batch:")
                     batch_rolls = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                         (st.session_state.inventory['DateCode'] == selected_batch)
                     ].sort_values(by='Length', ascending=False)
-                    st.dataframe(batch_rolls[['ID', 'Length', 'Width']], hide_index=True, use_container_width=True)
+                    st.dataframe(batch_rolls[['ID', 'Length', 'Width']].style.format({"Length": "{:.2f}"}), hide_index=True, use_container_width=True)
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
