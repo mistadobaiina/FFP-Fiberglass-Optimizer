@@ -70,4 +70,28 @@ if not st.session_state.inventory.empty:
                     viz_cols[-1].success(f"REMNANT\n{remnant}'")
                 
                 # Other Rolls table
-                with st.expander("View
+                with st.expander("View other available rolls in this batch"):
+                    st.table(available_rolls[1:])
+            else:
+                st.error("No single roll is long enough. Check your inventory or split the job.")
+
+    # --- 4. SQUARE CORNER VISIBILITY ---
+    with col_sc:
+        st.subheader("📦 Available SCs")
+        st.caption(f"Matching {p_color} / {selected_batch}")
+        
+        sc_inventory = st.session_state.inventory[
+            (st.session_state.inventory['Type'].str.upper() == 'SC') & 
+            (st.session_state.inventory['Color'] == p_color) &
+            (st.session_state.inventory['DateCode'] == selected_batch)
+        ]
+        
+        if not sc_inventory.empty:
+            # Display SCs as a clean list with "Pull" buttons or just data
+            st.dataframe(sc_inventory[['ID', 'Length']], hide_index=True, use_container_width=True)
+            st.write(f"Total SCs in Stock: {len(sc_inventory)}")
+        else:
+            st.warning("No matching Square Corners in bin.")
+
+else:
+    st.info("👋 Welcome! Please upload your 'current_inventory.csv' in the sidebar to get started.")
