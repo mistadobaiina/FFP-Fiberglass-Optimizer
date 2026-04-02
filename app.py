@@ -5,7 +5,7 @@ import pandas as pd
 SCRAP_THRESHOLD = 4.00 
 
 st.set_page_config(page_title="Pool Shop Optimizer", layout="wide")
-st.title("🏗️ Hybrid Pool: Full Production & Inventory Dashboard")
+st.title("🏗️ Hybrid Pool: Production Shape Optimizer")
 
 # --- 1. INVENTORY SYNC ---
 if 'inventory' not in st.session_state:
@@ -16,44 +16,64 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Shop CSV", type=["csv"])
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        # Ensure Length is float and formatted
         df['Length'] = df['Length'].astype(float).round(2)
         st.session_state.inventory = df
         st.success("Inventory Loaded!")
 
-# --- 2. PROJECT REQUIREMENTS ---
+# --- 2. POOL CONFIGURATION ---
 if not st.session_state.inventory.empty:
     st.header("Step 1: Project Specs")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         p_color = st.selectbox("Pool Color", st.session_state.inventory['Color'].unique())
     with c2:
         p_width = st.selectbox("Wall Width (in)", st.session_state.inventory['Width'].unique())
+    with c3:
+        pool_type = st.selectbox("Pool Shape/Type", ["Rectangle with SC", "Rectangle w/out SC", "Freeform"])
 
-    st.subheader("Step 2: Enter Wall List")
+    st.divider()
+    st.subheader(f"Step 2: Enter {pool_type} Dimensions")
     
-    # Standard Rectangle Template
-    input_df = pd.DataFrame([
-        {"Length": 36, "Use_SC": False},
-        {"Length": 36, "Use_SC": False},
-        {"Length": 18, "Use_SC": True},
-        {"Length": 18, "Use_SC": True}
-    ])
+    # Logic to build the wall list based on pool type
+    wall_data = []
     
+    if pool_type == "Rectangle with SC":
+        col_len, col_wid = st.columns(2)
+        with col_len:
+            rect_l = st.number_input("Straight Wall Length (ft)", min_value=1.0, value=20.0, step=0.5)
+        with col_wid:
+            rect_w = st.number_input("Corner Wall Width (ft) - Will use SC", min_value=1.0, value=12.0, step=0.5)
+        
+        # Build the 4-wall list (2 lengths from roll, 2 widths from SC)
+        wall_data = [
+            {"Length": rect_l, "Use_SC": False},
+            {"Length": rect_l, "Use_SC": False},
+            {"Length": rect_w, "Use_SC": True},
+            {"Length": rect_w, "Use_SC": True}
+        ]
+        
+    elif pool_type == "Rectangle w/out SC":
+        total_p = st.number_input("Total Continuous Perimeter (ft)", min_value=1.0, value=64.0, step=0.5)
+        wall_data = [{"Length": total_p, "Use_SC": False}]
+        
+    elif pool_type == "Freeform":
+        total_f = st.number_input("Total Perimeter Length (ft)", min_value=1.0, value=80.0, step=0.5)
+        wall_data = [{"Length": total_f, "Use_SC": False}]
+
+    # Display the generated list for confirmation
     production_table = st.data_editor(
-        input_df, 
+        pd.DataFrame(wall_data), 
         num_rows="dynamic", 
         column_config={
-            "Length": st.column_config.NumberColumn("Length (ft)", min_value=0.50, step=0.01, format="%.2f"),
-            "Use_SC": st.column_config.CheckboxColumn("Use SC?", default=False)
+            "Length": st.column_config.NumberColumn("Length (ft)", format="%.2f"),
+            "Use_SC": st.column_config.CheckboxColumn("Use SC?")
         },
         use_container_width=True
     )
 
-    if st.button("🚀 Run Production Matcher"):
-        # Format input lengths to 2 decimal points
+    if st.button("🚀 Calculate Production Plan"):
+        # Formatting
         production_table['Length'] = production_table['Length'].astype(float).round(2)
-        
         sc_needed = production_table[production_table['Use_SC'] == True]
         roll_cuts_needed = sorted(production_table[production_table['Use_SC'] == False]['Length'].tolist(), reverse=True)
         total_roll_ft = round(sum(roll_cuts_needed), 2)
@@ -93,7 +113,7 @@ if not st.session_state.inventory.empty:
                         v_cols[i].info(f"{c:.2f}'")
                     
                     if len(all_eligible_rolls) > 1:
-                        with st.expander("🔄 Show other roll options for this batch"):
+                        with st.expander("🔄 Show other roll options"):
                             other_display = all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']].copy()
                             st.dataframe(other_display.style.format({"Length": "{:.2f}"}), hide_index=True)
                 else:
@@ -101,7 +121,7 @@ if not st.session_state.inventory.empty:
 
             with sc_col:
                 st.subheader("📦 SC Bin Visibility")
-                st.markdown("**Batch Matches (Best Choice):**")
+                st.markdown("**Batch Matches:**")
                 for _, row in sc_needed.iterrows():
                     match = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
@@ -111,10 +131,9 @@ if not st.session_state.inventory.empty:
                     if not match.empty:
                         st.write(f"✅ **{row['Length']:.2f}ft SC** (ID: {match.iloc[0]['ID']})")
                     else:
-                        st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN STOCK")
+                        st.error(f"❌ **{row['Length']:.2f}ft SC** NOT IN BATCH")
 
-                st.write("---")
-                with st.expander("🔍 View All Other SCs in Stock"):
+                with st.expander("🔍 Full SC Inventory"):
                     all_scs = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
                         (st.session_state.inventory['Color'] == p_color)
