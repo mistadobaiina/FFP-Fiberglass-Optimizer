@@ -162,14 +162,28 @@ if not st.session_state.inventory.empty:
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
                 total_needed = sum(final_cuts)
-                pick = available_rolls[available_rolls['Length'] >= total_needed].sort_values(by='Length').iloc[0]
-                target_roll_id = str(pick['ID'])
+                
+                # Fetch eligible rolls and sort by length to minimize waste
+                eligible_single_rolls = available_rolls[available_rolls['Length'] >= total_needed].sort_values(by='Length')
+                
+                if not eligible_single_rolls.empty:
+                    pick = eligible_single_rolls.iloc[0]
+                    target_roll_id = str(pick['ID'])
 
-                st.info(f"**Roll: {pick['ID']}** ({pick['Length']:.2f} ft)")
-                remnant = round(pick['Length'] - total_needed, 2)
-                v_cols = st.columns([float(c) for c in final_cuts] + [max(remnant, 0.5)])
-                for i, c in enumerate(final_cuts):
-                    v_cols[i].info(f"{c:.2f}'")
+                    st.info(f"**Roll: {pick['ID']}** ({pick['Length']:.2f} ft) [Lot: {pick['DateCode']}]")
+                    remnant = round(pick['Length'] - total_needed, 2)
+                    v_cols = st.columns([float(c) for c in final_cuts] + [max(remnant, 0.5)])
+                    for i, c in enumerate(final_cuts):
+                        v_cols[i].info(f"{c:.2f}'")
+                        
+                    # --- RESTORED ALTERNATE OPTIONS ---
+                    if len(eligible_single_rolls) > 1:
+                        with st.expander(f"🔄 Other {p_width}in {p_color} rolls in Lot {selected_base_lot}"):
+                            st.dataframe(eligible_single_rolls[['ID', 'Length', 'DateCode']].style.format({"Length": "{:.2f}"}), hide_index=True)
+                else:
+                    target_roll_id = ""
+                    st.warning("⚠️ No single roll long enough. Multi-roll split required.")
+                    st.dataframe(available_rolls[['ID', 'Length', 'DateCode']].sort_values(by='ID'), hide_index=True)
 
             with sc_col:
                 st.subheader("📦 SC Bin")
@@ -185,8 +199,9 @@ if not st.session_state.inventory.empty:
             st.divider()
             s1, s2, s3 = st.columns(3)
             s1.metric("Total Used", f"{total_needed:.2f} ft")
-            s2.metric("Remnant", f"{remnant:.2f} ft", delta="REUSABLE" if remnant >= SCRAP_THRESHOLD else "SCRAP")
-            s3.write(f"**Batch:** {pick['DateCode']}")
+            if 'remnant' in locals():
+                s2.metric("Remnant", f"{remnant:.2f} ft", delta="REUSABLE" if remnant >= SCRAP_THRESHOLD else "SCRAP")
+                s3.write(f"**Batch:** {pick['DateCode']}")
 
 else:
     st.info("Upload inventory to begin.")
