@@ -28,9 +28,8 @@ if not st.session_state.inventory.empty:
         p_width = st.selectbox("Wall Width (in)", st.session_state.inventory['Width'].unique())
 
     st.subheader("Step 2: Enter Wall List")
-    st.caption("Enter lengths and check 'Use SC' for corner pieces.")
     
-    # Create an editable table for wall inputs
+    # Pre-fill with a standard rectangle example
     input_df = pd.DataFrame([
         {"Length": 12.0, "Use_SC": False},
         {"Length": 12.0, "Use_SC": False},
@@ -49,13 +48,11 @@ if not st.session_state.inventory.empty:
     )
 
     if st.button("🚀 Run Production Matcher"):
-        # Separate the items
         sc_needed = production_table[production_table['Use_SC'] == True]
-        roll_cuts_needed = production_table[production_table['Use_SC'] == False]['Length'].tolist()
+        roll_cuts_needed = sorted(production_table[production_table['Use_SC'] == False]['Length'].tolist(), reverse=True)
         total_roll_ft = sum(roll_cuts_needed)
 
         # --- 3. AUTO-BATCH SELECTION ---
-        # Find which batches have enough TOTAL roll stock + the required SCs
         batch_lookup = st.session_state.inventory[
             (st.session_state.inventory['Color'] == p_color) & 
             (st.session_state.inventory['Width'] == p_width)
@@ -69,12 +66,11 @@ if not st.session_state.inventory.empty:
             selected_batch = batch_lookup[valid_batches].idxmin()
             st.success(f"✅ **Batch Match Found:** Using Date Code **{selected_batch}**")
 
-            # --- 4. LAYOUT: PULL LISTS ---
+            # --- 4. THE PULL LISTS ---
             roll_col, sc_col = st.columns([2, 1])
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                # Find best roll for the non-SC walls
                 best_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
@@ -85,22 +81,16 @@ if not st.session_state.inventory.empty:
                     pick = best_rolls.iloc[0]
                     st.info(f"**Pull Roll: {pick['ID']}**")
                     
-                    # Visualization
+                    # Visualization (Cuts only)
                     remnant = pick['Length'] - total_roll_ft
-                    v_cols = st.columns([c for c in sorted(roll_cuts_needed, reverse=True)] + [max(remnant, 0.5)])
-                    for i, c in enumerate(sorted(roll_cuts_needed, reverse=True)):
+                    v_cols = st.columns([c for c in roll_cuts_needed] + [0.5]) # Tiny buffer for visual
+                    for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c}'")
-                    
-                    if remnant < SCRAP_THRESHOLD:
-                        v_cols[-1].error(f"SCRAP: {remnant}'")
-                    else:
-                        v_cols[-1].success(f"REMNANT: {remnant}'")
                 else:
-                    st.warning("Batch has enough total footage, but it's split across multiple rolls.")
+                    st.warning("Batch footage is split across multiple rolls.")
 
             with sc_col:
                 st.subheader("📦 SC Pull List")
-                # Check if the requested SCs actually exist in this batch
                 for _, row in sc_needed.iterrows():
                     match = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
@@ -108,9 +98,30 @@ if not st.session_state.inventory.empty:
                         (st.session_state.inventory['DateCode'] == selected_batch)
                     ]
                     if not match.empty:
-                        st.write(f"✅ **{row['Length']}ft SC** (Item: {match.iloc[0]['ID']})")
+                        st.write(f"✅ **{row['Length']}ft SC** (ID: {match.iloc[0]['ID']})")
                     else:
-                        st.error(f"❌ **{row['Length']}ft SC** NOT IN STOCK for this batch.")
+                        st.error(f"❌ **{row['Length']}ft SC** NOT IN STOCK")
+
+            # --- 5. CLEAN SUMMARY (BELOW) ---
+            st.divider()
+            st.subheader("📋 Roll Usage Summary")
+            
+            summary_c1, summary_c2, summary_c3 = st.columns(3)
+            
+            with summary_c1:
+                st.metric("Total Used", f"{total_roll_ft} ft")
+            
+            if 'pick' in locals():
+                with summary_c2:
+                    if remnant >= SCRAP_THRESHOLD:
+                        st.metric("New Remnant Length", f"{remnant} ft", delta="REUSABLE", delta_color="normal")
+                    else:
+                        st.metric("Scrap Generated", f"{remnant} ft", delta="SCRAP", delta_color="inverse")
+                
+                with summary_c3:
+                    status = "✅ Re-label & Restock" if remnant >= SCRAP_THRESHOLD else "🗑️ Dispose of Waste"
+                    st.write(f"**Action Required:**")
+                    st.write(status)
 
 else:
-    st.info("Please upload your inventory CSV in the sidebar.")
+    st.info("Upload your inventory CSV in the sidebar.")
