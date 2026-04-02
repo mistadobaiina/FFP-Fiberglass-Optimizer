@@ -31,10 +31,10 @@ if not st.session_state.inventory.empty:
     
     # Standard Rectangle Template
     input_df = pd.DataFrame([
-        {"Length": 12.0, "Use_SC": False},
-        {"Length": 12.0, "Use_SC": False},
-        {"Length": 4.0, "Use_SC": True},
-        {"Length": 4.0, "Use_SC": True}
+        {"Length": 36.0, "Use_SC": False},
+        {"Length": 36.0, "Use_SC": False},
+        {"Length": 18.0, "Use_SC": True},
+        {"Length": 18.0, "Use_SC": True}
     ])
     
     production_table = st.data_editor(
@@ -71,7 +71,6 @@ if not st.session_state.inventory.empty:
 
             with roll_col:
                 st.subheader("✂️ Roll Cut Map")
-                # Find all rolls in this batch that fit
                 all_eligible_rolls = st.session_state.inventory[
                     (st.session_state.inventory['Type'].str.upper() == 'ROLL') & 
                     (st.session_state.inventory['DateCode'] == selected_batch) &
@@ -87,16 +86,17 @@ if not st.session_state.inventory.empty:
                     for i, c in enumerate(roll_cuts_needed):
                         v_cols[i].info(f"{c}'")
                     
-                    # --- NEW/RESTORED: OTHER OPTIONS SECTION ---
                     if len(all_eligible_rolls) > 1:
                         with st.expander("🔄 Show other roll options for this batch"):
-                            st.write("If the recommended roll is unavailable, use one of these:")
                             st.dataframe(all_eligible_rolls.iloc[1:][['ID', 'Length', 'Width']], hide_index=True)
                 else:
                     st.warning("Batch footage is split across multiple rolls.")
 
             with sc_col:
-                st.subheader("📦 SC Pull List")
+                st.subheader("📦 SC Bin Visibility")
+                
+                # SECTION A: THE DIRECT MATCHES
+                st.markdown("**Batch Matches (Best Choice):**")
                 for _, row in sc_needed.iterrows():
                     match = st.session_state.inventory[
                         (st.session_state.inventory['Type'].str.upper() == 'SC') & 
@@ -106,9 +106,19 @@ if not st.session_state.inventory.empty:
                     if not match.empty:
                         st.write(f"✅ **{row['Length']}ft SC** (ID: {match.iloc[0]['ID']})")
                     else:
-                        st.error(f"❌ **{row['Length']}ft SC** NOT IN STOCK")
+                        st.error(f"❌ **{row['Length']}ft SC** NOT IN BATCH")
 
-            # --- 5. CLEAN SUMMARY (BELOW) ---
+                # SECTION B: GLOBAL SC VISIBILITY (The "Rest of Shop" view)
+                st.write("---")
+                with st.expander("🔍 View All Other SCs in Stock"):
+                    st.caption(f"All {p_color} Square Corners regardless of batch")
+                    all_scs = st.session_state.inventory[
+                        (st.session_state.inventory['Type'].str.upper() == 'SC') & 
+                        (st.session_state.inventory['Color'] == p_color)
+                    ].sort_values(by=['DateCode', 'Length'])
+                    st.dataframe(all_scs[['ID', 'Length', 'DateCode']], hide_index=True, use_container_width=True)
+
+            # --- 5. CLEAN SUMMARY ---
             st.divider()
             st.subheader("📋 Roll Usage Summary")
             
